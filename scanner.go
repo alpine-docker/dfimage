@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"github.com/fatih/color"
+	"strings"
+	"math"
 )
 
 var patterns []Pattern
@@ -26,6 +28,23 @@ func compileSecretPatterns(){
 		i.Regex = regexp.MustCompile(i.Value)
 		patterns = append(patterns, i)
 	}
+}
+
+const BASE64_CHARS string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+func shannonEntropy(data string) float64{
+     if len(data) <= 0 {
+         return 0
+     }
+     var entropy float64
+     entropy = 0
+     for _, x := range BASE64_CHARS{
+         p_x := float64(strings.Count(data, string(x)))/float64(len(data))
+         if p_x > 0{
+             entropy += - p_x*math.Log2(p_x)
+         }
+     }
+     return entropy
+
 }
 
 func scanFilename(filename string, loc string) {

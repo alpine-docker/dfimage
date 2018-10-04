@@ -3,6 +3,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"net/http"
 	"context"
 	"flag"
 	"io"
@@ -29,10 +31,14 @@ const FilePerms = 0700
 
 var filelist = flag.String("f", "", "File containing images to analyze seperated by line")
 var verbose = flag.Bool("v", false, "Print all details about the image")
+var checkAllTags = flag.Bool("sT", false, "Experimental: Pull all tags for an image and analyze them currently only works for dockerhub images. This takes a long time depending on how many tags there are! It also may require significant disk space")
 var filter = flag.Bool("filter", true, "Filters filenames that create noise such as" +
 	" node_modules. Check ignore.go file for more details")
 var extractLayers = flag.Bool("x", false, "Save layers to current directory")
 var specificVersion = flag.String("sV", "", "Set the docker client ID to a specific version -sV=1.36")
+var searchForSecrets = flag.Bool("sS", false, "Enable checks for common secrets checked into Docker")
+var deleteImageAfter = flag.Bool("d", false, "Removes images from docker after analysis is complete")
+
 var re *regexp.Regexp
 
 type Manifest struct {
@@ -129,10 +135,38 @@ func analyze(cli *client.Client, imageID string) {
 		color.Red("%s", err)
 	}
 
+	if *deleteImageAfter{
+		resp, err := cli.ImageRemove(context.Background(), imageID, types.ImageRemoveOptions{false, false})
+		if err != nil {
+			color.Red("Unable to remove image %s", imageID)
+		}
+		if resp != nil {
+			color.Yellow("Removed %s from local machine", resp[0].Untagged)
+		}
+	}
+
 }
 
 func analyzeSingleImage(cli *client.Client, imageID string) {
-	analyze(cli, imageID)
+	if *checkAllTags {
+		if strings.Contains(imageID, ":") {
+			trimVersionNum := strings.Index(imageID, ":")
+			if trimVersionNum > 0 {
+				imageID = imageID[:trimVersionNum]
+			}
+		}
+		color.White("Checking all tags for " + imageID)
+		imageTags, err := getImageTags(imageID)
+		if err != nil {
+			color.Red("%s Unable to find tags for %s skipping...", err, imageID)
+		}
+		color.Yellow("Found %d tags : %s", len(imageTags), imageTags)
+		for _, tag := range imageTags{
+			analyze(cli, fmt.Sprintf("%s:%s", imageID, tag))
+		}
+	} else{
+		analyze(cli, imageID)
+	}
 }
 
 func analyzeMultipleImages(cli *client.Client) {
@@ -163,7 +197,7 @@ func extractImageLayers(cli *client.Client, imageID string, history []dockerHist
 	var layersToExtract = make(map[string]int)
 
 
-	for i := startAt; i < len(history); i++ { //Skip the first layer as it clutters it
+	for i := startAt; i < len(history); i++ { //Skip the first layer as it clutters output
 		if strings.Contains(history[i].CreatedBy, "ADD") || strings.Contains(history[i].CreatedBy, "COPY") {
 			layersToExtract[history[i].LayerID] = 1
 			layerID := strings.Split(history[i].LayerID, "/")[0]
@@ -207,7 +241,7 @@ func extractImageLayers(cli *client.Client, imageID string, history []dockerHist
 					ioutil.WriteFile(filepath.Join(outputDir, layerID, name), data, FilePerms)
 				case tar.TypeSymlink:
 					/*
-					Skipping Symlinks as there can be dangerous behavior here
+					Skipping Symlinks as there can be dangerous behavior here uncomment if you need it
 					dest := filepath.Join(outputDir, layerID, name)
 					source := hdrr.Linkname
 					if _, err := os.Stat(dest); !os.IsNotExist(err) {
@@ -235,7 +269,9 @@ func analyzeImageFilesystem(cli *client.Client, imageID string) (error) {
 	var configs []Manifest
 	var hist []dockerHist
 	var layers = make(map[string][]string)
-	color.White("Potential secrets:")
+	if *searchForSecrets{
+		color.White("Potential secrets:")
+	}
 	for {
 		imageFile, err := tr.Next()
 		if err == io.EOF {
@@ -272,13 +308,12 @@ func analyzeImageFilesystem(cli *client.Client, imageID string) (error) {
 					color.Red("%s", err)
 				}
 				layers[imageFile.Name] = append(layers[imageFile.Name], tarLayerFile.Name)
-				match := re.Find([]byte(tarLayerFile.Name))
-				if match == nil {
-					scanFilename(tarLayerFile.Name, imageFile.Name)
+				if *searchForSecrets{
+					match := re.Find([]byte(tarLayerFile.Name))
+					if match == nil {
+						scanFilename(tarLayerFile.Name, imageFile.Name)
+					}
 				}
-
-
-
 			}
 		}
 	}
@@ -324,7 +359,7 @@ func printResults(layers []dockerHist) {
 			color.Green("%s\n", cleanString(layers[i].CreatedBy))
 			if strings.Contains(layers[i].CreatedBy, "ADD") || strings.Contains(layers[i].CreatedBy, "COPY") {
 				for _, l := range layers[i].Layers {
-					if *filter {
+					if *filter && *searchForSecrets {
 						match := re.Find([]byte(l))
 						if match == nil {
 							color.Green("\t%s", l)
@@ -342,7 +377,6 @@ func printResults(layers []dockerHist) {
 	color.White("")
 }
 
-
 func cleanString(str string) string {
 	s := strings.Join(strings.Fields(str), " ")
 	s = strings.Replace(s, "&&", " \\\n\t&&", -1)
@@ -355,12 +389,51 @@ func cleanString(str string) string {
 	return s
 }
 
+func getImageTags(imageID string) ([]string, error){
+	info := strings.Split(imageID, "/")
+	if len(info) == 1{
+		color.White("This looks like an official library finding all tags for library/%s", info[0])
+		info = append([]string{"library"},info...)
+	}
+	if len(info) != 2 {
+		return nil, errors.New("Unable to properly parse " + imageID)
+	}
+	org := info[0]
+	imagename := info[1]
+	resp, err := http.Get(fmt.Sprintf("https://hub.docker.com/r/%s/%s/tags/", org, imagename))
+	defer resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil{
+		return nil, err
+	}
+	startSearchString := fmt.Sprintf("\"tags\":{\"%s\":{\"%s\":{\"result\":[", org, imagename)
+	start := bytes.Index(body, []byte(startSearchString)) + len(startSearchString) - 1
+	if err != nil{
+		return nil, err
+	}
+	end := bytes.Index(body[start:], []byte("\"]"))+start + 2 //2 is for "] at the end to make it parseable
+	if err != nil{
+		return nil, err
+	}
+	tags := body[start:end]
+	var data []string
+	if err := json.Unmarshal(tags, &data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 func main() {
 	var cli *client.Client
 	var err error
 	flag.Parse()
-	re = regexp.MustCompile(strings.Join(InternalWordlist, "|"))
-	compileSecretPatterns()
+	if *searchForSecrets{
+		re = regexp.MustCompile(strings.Join(InternalWordlist, "|"))
+		compileSecretPatterns()
+	}
 	if len(*specificVersion) > 0 {
 		cli, err = client.NewClientWithOpts(client.WithVersion(*specificVersion))
 	} else{
@@ -377,7 +450,7 @@ func main() {
 		imageID := repo
 		analyzeSingleImage(cli, imageID)
 	} else {
-		color.Red("Please provide a repository image to analyze. ./whaler nginx:latest")
+		color.Red("Please provide a repository image to analyze. ./whaler nginx or ./whaler nginx:latest")
 		return
 	}
 	cli.Close()

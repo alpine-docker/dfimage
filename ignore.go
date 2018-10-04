@@ -66,7 +66,6 @@ var InternalWordlist = []string{
 	"wicket-leaflet.js",
 	".sublime-project",
 	".sublime-workspace",
-	".vscode",
 	"(^|/)prototype(.*)\\.js$",
 	"(^|/)effects\\.js$",
 	"(^|/)controls\\.js$",
@@ -119,7 +118,6 @@ var InternalWordlist = []string{
 	"(^|/)mvnw$",
 	"(^|/)mvnw\\.cmd$",
 	"(^|/)\\.mvn/wrapper/",
-	"-vsdoc\\.js$",
 	"\\.intellisense\\.js$",
 	"(^|/)jquery([^.]*)\\.validate(\\.unobtrusive)?\\.js$",
 	"(^|/)jquery([^.]*)\\.unobtrusive\\.ajax\\.js$",
@@ -159,5 +157,4 @@ var InternalWordlist = []string{
 	"proguard-rules.pro",
 	"^puphpet/",
 	"(^|/)\\.google_apis/",
-	"^Jenkinsfile$",
 }
