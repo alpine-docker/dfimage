@@ -21,8 +21,8 @@ import (
 	"path/filepath"
 	"net/url"
 	"fmt"
-	"github.com/docker/docker/pkg/jsonmessage"
-	"github.com/docker/docker/pkg/term"
+	"github.com/moby/moby/pkg/jsonmessage"
+	"github.com/moby/term"
 )
 
 const FilePerms = 0700
